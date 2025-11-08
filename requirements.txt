@@ -1,8 +1,11 @@
 flask==3.0.0
 gunicorn
-tflite-runtime==2.14.0
 numpy
 opencv-python
+onnxruntime==1.19.0
+
+
+
 
 
 
