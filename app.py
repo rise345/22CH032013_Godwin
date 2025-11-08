@@ -1,106 +1,50 @@
-from flask import Flask, render_template, request
-from keras.preprocessing import image
+from flask import Flask, render_template, request, jsonify
 import numpy as np
-import sqlite3
+import cv2
+import tflite_runtime.interpreter as tflite
 import os
-from datetime import datetime
-import tensorflow as tf
-from werkzeug.utils import secure_filename
 
-
-# Initialize Flask app
 app = Flask(__name__)
-app.config['UPLOAD_FOLDER'] = 'static/uploads'
-
-# Ensure upload folder exists
-os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
 # Load the TFLite model
-interpreter = tf.lite.Interpreter(model_path="face_emotionModel_compat.tflite")
+MODEL_PATH = "face_emotionModel_compat.tflite"
+interpreter = tflite.Interpreter(model_path=MODEL_PATH)
 interpreter.allocate_tensors()
 
-# Get input and output details
+# Get input and output tensors info
 input_details = interpreter.get_input_details()
 output_details = interpreter.get_output_details()
 
-# Define emotion labels (same as those used in training)
-emotion_labels = ['angry', 'disgust', 'fear', 'happy', 'neutral', 'sad', 'surprise']
+# Define emotion labels (adjust these if your model uses different ones)
+EMOTIONS = ["Angry", "Disgust", "Fear", "Happy", "Sad", "Surprise", "Neutral"]
 
-# Create or connect to SQLite database
-def init_db():
-    conn = sqlite3.connect('database.db')
-    cursor = conn.cursor()
-    cursor.execute('''CREATE TABLE IF NOT EXISTS students (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        name TEXT,
-                        email TEXT,
-                        department TEXT,
-                        image_path TEXT,
-                        emotion TEXT,
-                        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-                    )''')
-    conn.commit()
-    conn.close()
+def predict_emotion(image):
+    """
+    Takes an image (as np.array), preprocesses it, and returns the predicted emotion.
+    """
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    resized = cv2.resize(gray, (48, 48))
+    normalized = resized / 255.0
+    img = np.expand_dims(normalized, axis=(0, -1)).astype(np.float32)
 
-init_db()
+    interpreter.set_tensor(input_details[0]['index'], img)
+    interpreter.invoke()
+    output_data = interpreter.get_tensor(output_details[0]['index'])
 
-# Route: Home page
-@app.route('/')
+    predicted_class = int(np.argmax(output_data))
+    emotion = EMOTIONS[predicted_class]
+    return emotion
+
+@app.route("/")
 def index():
-    return render_template('index.html')
+    return render_template("index.html")  # your front page
 
-# Route: Handle form submission
-@app.route('/submit', methods=['POST'])
-def submit():
-    name = request.form['name']
-    email = request.form['email']
-    department = request.form['department']
-    file = request.files['image']
+@app.route("/predict", methods=["POST"])
+def predict():
+    if "file" not in request.files:
+        return jsonify({"error": "No file uploaded"}), 400
 
-    if file:
-        filename = secure_filename(file.filename)
-        img_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-        file.save(img_path)
+    file = request.files["file"]
+    if file.filename == "":
+        return jsonify({"error": "No select
 
-        # Preprocess the image for the model
-        img = image.load_img(img_path, target_size=(48, 48), color_mode='grayscale')
-        img_array = image.img_to_array(img)
-        img_array = np.expand_dims(img_array, axis=0)
-        img_array = img_array.astype('float32') / 255.0
-
-        # Make prediction
-        interpreter.set_tensor(input_details[0]['index'], img_array)
-        interpreter.invoke()
-        predictions = interpreter.get_tensor(output_details[0]['index'])
-
-        # Get emotion label
-        emotion = emotion_labels[np.argmax(predictions)]
-
-        # Store user info + emotion in database
-        conn = sqlite3.connect('database.db')
-        cursor = conn.cursor()
-        cursor.execute("INSERT INTO students (name, email, department, image_path, emotion) VALUES (?, ?, ?, ?, ?)",
-                       (name, email, department, img_path, emotion))
-        conn.commit()
-        conn.close()
-
-        # Friendly message based on emotion
-        emotion_messages = {
-            'angry': "You look angry. Take a deep breath!",
-            'disgust': "You seem displeased. What's bothering you?",
-            'fear': "You look scared. Don't worry, you're safe here!",
-            'happy': "You’re smiling! Glad to see you happy!",
-            'neutral': "You seem calm and composed.",
-            'sad': "You look sad. Hope you feel better soon.",
-            'surprise': "You look surprised! Something unexpected happened?"
-        }
-
-        message = emotion_messages.get(emotion, "Emotion detected.")
-        return render_template('index.html', name=name, emotion=emotion, message=message, img_path=img_path)
-
-    else:
-        return "No image uploaded."
-
-
-if __name__ == '__main__':
-    app.run()
